@@ -2,7 +2,6 @@ import pytest
 from app.modules.execucao.domain.entities import FilaExecucao, StatusExecucao, PrioridadeExecucao
 from app.modules.execucao.infrastructure.repositories import FilaExecucaoRepository
 from datetime import datetime
-from pymongo.errors import DuplicateKeyError
 
 
 @pytest.mark.asyncio
@@ -164,5 +163,5 @@ async def test_ordem_servico_duplicada(mongodb):
     )
     
     # Deve lançar erro de duplicidade
-    with pytest.raises(DuplicateKeyError):
+    with pytest.raises(ValueError):
         await repo.salvar(fila2)
