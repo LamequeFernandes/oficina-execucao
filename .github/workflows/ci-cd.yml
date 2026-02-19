@@ -1,0 +1,192 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+
+jobs:
+  build-and-test:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:7
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: admin123
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd="echo 'db.runCommand({ ping: 1 })' | mongosh mongodb://admin:admin123@localhost:27017/admin --quiet"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-cov coverage
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          python - <<'PY'
+          import time
+          from pymongo import MongoClient
+
+          uri = "mongodb://admin:admin123@127.0.0.1:27017/admin"
+
+          for attempt in range(30):
+              try:
+                  client = MongoClient(uri, serverSelectionTimeoutMS=2000)
+                  client.admin.command('ping')
+                  print('MongoDB is up')
+                  break
+              except Exception:
+                  print(f'Waiting for MongoDB... ({attempt + 1}/30)')
+                  time.sleep(2)
+          else:
+              raise SystemExit('MongoDB did not become ready in time')
+          PY
+
+      - name: Initialize MongoDB indexes
+        run: |
+          python - <<'PY'
+          from pymongo import MongoClient
+
+          client = MongoClient("mongodb://admin:admin123@127.0.0.1:27017/")
+          db = client["oficina_execucao_test"]
+          db.fila_execucao.create_index("ordem_servico_id", unique=True)
+          db.fila_execucao.create_index("status")
+          db.fila_execucao.create_index([("prioridade", -1), ("dta_criacao", 1)])
+          print('MongoDB indexes initialized')
+          PY
+
+      - name: Run tests with coverage
+        env:
+          MONGODB_URL: mongodb://admin:admin123@127.0.0.1:27017
+          MONGODB_DATABASE: oficina_execucao_test
+          SECRET_KEY: test_secret_key
+          ALGORITHM: HS256
+          JWT_ISSUER: oficina-auth
+          JWT_AUDIENCE: oficina-api
+          URL_API_OS: http://localhost:8001
+        run: |
+          pytest --cov=./ --cov-report=xml --cov-report=html --cov-fail-under=80 --maxfail=1 --disable-warnings -q
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: htmlcov/
+          retention-days: 30
+
+      - name: Check coverage
+        run: |
+          COVERAGE_PERCENT=$(python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          root = tree.getroot()
+          coverage = root.attrib['line-rate']
+          print(f'{float(coverage)*100:.2f}%')
+          ")
+          echo "Coverage: $COVERAGE_PERCENT"
+
+          python -c "
+          import xml.etree.ElementTree as ET
+          tree = ET.parse('coverage.xml')
+          root = tree.getroot()
+          coverage = float(root.attrib['line-rate'])
+          print(f'Coverage: {coverage*100:.2f}%')
+          if coverage < 0.8:
+              print('ERROR: Coverage below 80%')
+              exit(1)
+          else:
+              print('SUCCESS: Coverage meets 80% requirement')
+          "
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:${{ github.sha }} .
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:latest
+
+      - name: Push to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:${{ github.sha }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:latest
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}
+
+      - name: Create Namespace
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Substitute Env Variables in Secret and Apply
+        run: |
+          sed -i "s|<MONGODB_URL>|${{ secrets.MONGODB_URL }}|g" k8s/secret.yaml
+          sed -i "s|<MONGODB_DATABASE>|${{ secrets.MONGODB_DATABASE }}|g" k8s/secret.yaml
+          sed -i "s|<SECRET_KEY>|${{ secrets.SECRET_KEY }}|g" k8s/secret.yaml
+          sed -i "s|<ALGORITHM>|HS256|g" k8s/secret.yaml
+          sed -i "s|<JWT_ISSUER>|oficina-auth|g" k8s/secret.yaml
+          sed -i "s|<JWT_AUDIENCE>|oficina-api|g" k8s/secret.yaml
+          sed -i "s|<URL_API_OS>|${{ secrets.URL_API_OS }}|g" k8s/secret.yaml
+
+          kubectl apply -f k8s/secret.yaml -n oficina
+          kubectl apply -f k8s/deployment.yaml -n oficina
+          kubectl apply -f k8s/service.yaml -n oficina
+          kubectl apply -f k8s/hpa.yaml -n oficina
+
+      - name: Update image to current commit
+        run: |
+          kubectl set image deployment/oficina-execucao-api api=${{ secrets.DOCKERHUB_USERNAME }}/oficina-execucao:${{ github.sha }} -n oficina
+
+      - name: Verify Deployment
+        run: |
+          kubectl rollout status deployment/oficina-execucao-api -n oficina --timeout=300s
+
+          echo "=== PODS ==="
+          kubectl get pods -n oficina
+
+          echo "=== SERVICES ==="
+          kubectl get svc -n oficina
+
+          echo "=== ENDPOINT ==="
+          kubectl get svc oficina-execucao-api-service -n oficina -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+      - name: Notify Deployment Success
+        run: echo "Deployment to Kubernetes cluster completed successfully."
