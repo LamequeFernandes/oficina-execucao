@@ -57,8 +57,9 @@ async def test_connect_to_mongo_cria_indices(monkeypatch):
             self.fila_execucao = FakeCollection()
 
     class FakeClient:
-        def __init__(self, url):
+        def __init__(self, url, **kwargs):
             self.url = url
+            self.kwargs = kwargs
             self.closed = False
             self.db_name = None
             self.db = FakeDatabase()
