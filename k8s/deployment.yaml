@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oficina-execucao-api
+  namespace: oficina
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oficina-execucao-api
+  template:
+    metadata:
+      labels:
+        app: oficina-execucao-api
+    spec:
+      containers:
+        - name: api
+          image: lamequesao/oficina-execucao:latest
+          ports:
+            - containerPort: 8002
+          env:
+            - name: DD_AGENT_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: DD_SERVICE
+              value: "oficina-execucao-api"
+            - name: DD_ENV
+              value: "fase4"
+            - name: DD_LOGS_INJECTION
+              value: "true"
+          envFrom:
+            - secretRef:
+                name: api-secrets
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 20
+            periodSeconds: 20

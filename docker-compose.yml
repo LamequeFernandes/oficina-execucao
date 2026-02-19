@@ -1,0 +1,36 @@
+version: '3.8'
+services:
+  mongodb:
+    image: mongo:7
+    container_name: oficina-mongodb-execucao
+    restart: always
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=admin123
+      - MONGO_INITDB_DATABASE=oficina_execucao
+    ports:
+      - '27018:27017'
+    volumes:
+      - mongodb-volume:/data/db
+      - ./scripts:/docker-entrypoint-initdb.d
+  
+  api:
+    build: .
+    container_name: my-fastapi-execucao
+    restart: always
+    ports:
+      - '8002:8000'
+    depends_on:
+      - mongodb
+    environment:
+      - MONGODB_URL=mongodb://admin:admin123@mongodb:27017/oficina_execucao?authSource=admin
+      - MONGODB_DATABASE=oficina_execucao
+      - SECRET_KEY='fakerandomsecretkey'
+      - ALGORITHM=HS256
+      - JWT_ISSUER=oficina-auth
+      - JWT_AUDIENCE=oficina-api
+      - URL_API_OS=http://localhost:8001
+
+volumes:
+  mongodb-volume:
+    driver: local
