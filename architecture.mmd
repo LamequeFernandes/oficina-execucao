@@ -1,0 +1,46 @@
+graph TB
+    subgraph "Microsserviço Oficina Execução"
+        subgraph "Presentation Layer"
+            routes[Routes/Controllers<br/>FastAPI Endpoints]
+        end
+        
+        subgraph "Application Layer"
+            usecases[Use Cases<br/>Business Logic]
+            dto[DTOs<br/>Data Transfer Objects]
+            interfaces[Interfaces<br/>Repository Contracts]
+        end
+        
+        subgraph "Domain Layer"
+            entities[Entities<br/>FilaExecucao<br/>StatusExecucao<br/>PrioridadeExecucao]
+        end
+        
+        subgraph "Infrastructure Layer"
+            repositories[Repositories<br/>Data Access]
+            models[SQLAlchemy Models]
+            mapper[Mapper<br/>Entity ↔️ Model]
+        end
+    end
+    
+    subgraph "External Services"
+        db[(MySQL Database<br/>oficina_execucao)]
+        os_service[Microsserviço<br/>Ordem de Serviço]
+    end
+    
+    routes --> usecases
+    usecases --> dto
+    usecases --> interfaces
+    usecases --> entities
+    usecases --> repositories
+    usecases --> os_service
+    repositories --> interfaces
+    repositories --> models
+    repositories --> mapper
+    mapper --> entities
+    models --> db
+    
+    style entities fill:#e1f5ff
+    style routes fill:#fff4e1
+    style usecases fill:#f0e1ff
+    style repositories fill:#e1ffe1
+    style db fill:#ffe1e1
+    style os_service fill:#ffe1e1
